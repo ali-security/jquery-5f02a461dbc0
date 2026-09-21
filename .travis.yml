@@ -1,3 +1,11 @@
 language: node_js
 node_js:
 - '0.10'
+addons:
+  # The QUnit suite needs a browser to run in; TestSwarm used to supply it.
+  chrome: stable
+script:
+# Upstream's own command: jsonlint, the module build, jshint/jscs and uglify.
+- npm test
+# The unit tests themselves, which upstream never ran from Travis.
+- test/run-ci-tests.sh

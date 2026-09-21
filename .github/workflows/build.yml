@@ -1,0 +1,96 @@
+name: build
+
+# Build-and-pack only. The project's CI suite lives in .travis.yml and runs on
+# Travis; this workflow exists solely to produce and upload the npm tarball.
+on:
+  workflow_dispatch:
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # jquery 1.11.1 was published from a tree whose dist/ files are committed
+      # (and are byte-identical to the released ones), so nothing is rebuilt
+      # here: running grunt/uglify again would re-minify with a newer uglify and
+      # a "(c) 2005, <current year>" banner, diverging from the release.
+      - name: Generate dist/cdn copies
+        # Mirrors makeReleaseCopies() in build/release.js, the step the
+        # jquery-release tool runs at publish time. It is what puts
+        # dist/cdn/* into the published tarball; grunt alone never creates it.
+        run: |
+          node -e '
+            var fs = require("fs"), path = require("path");
+            var devFile = "dist/jquery.js",
+                minFile = "dist/jquery.min.js",
+                mapFile = "dist/jquery.min.map",
+                cdnFolder = "dist/cdn",
+                VER = require("./package.json").version,
+                releaseFiles = {
+                  "jquery-VER.js": devFile,
+                  "jquery-VER.min.js": minFile,
+                  "jquery-VER.min.map": mapFile,
+                  "jquery.js": devFile,
+                  "jquery.min.js": minFile,
+                  "jquery.min.map": mapFile,
+                  "jquery-latest.js": devFile,
+                  "jquery-latest.min.js": minFile,
+                  "jquery-latest.min.map": mapFile
+                };
+            fs.mkdirSync(cdnFolder, { recursive: true });
+            Object.keys(releaseFiles).forEach(function( key ) {
+              var text,
+                  builtFile = releaseFiles[ key ],
+                  unpathedFile = key.replace( /VER/g, VER ),
+                  releaseFile = cdnFolder + "/" + unpathedFile;
+              if ( /\.map$/.test( releaseFile ) ) {
+                // Map files reference the renamed uncompressed file.
+                text = fs.readFileSync( builtFile, "utf8" )
+                  .replace( /"file":"([^"]+)","sources":\["([^"]+)"\]/,
+                    "\"file\":\"" + unpathedFile.replace( /\.min\.map/, ".min.js" ) +
+                    "\",\"sources\":[\"" + unpathedFile.replace( /\.min\.map/, ".js" ) + "\"]" );
+                fs.writeFileSync( releaseFile, text );
+              } else if ( /\.min\.js$/.test( releaseFile ) ) {
+                // The CDN copies drop the source map comment.
+                text = fs.readFileSync( builtFile, "utf8" )
+                  .replace( /\/\/# sourceMappingURL=\S+/, "" );
+                fs.writeFileSync( releaseFile, text );
+              } else if ( builtFile !== releaseFile ) {
+                fs.writeFileSync( releaseFile, fs.readFileSync( builtFile ) );
+              }
+            });
+          '
+          ls -l dist/cdn
+
+      # The public tarball was packed with npm 1.2.25 on node 0.10, and it ships
+      # members (.npmignore, .bowerrc, .jscsrc) that npm >= 5's packlist drops.
+      # Pack with the original pair so the member set matches.
+      - name: Fetch node 0.10.48 and npm 1.2.25
+        run: |
+          mkdir -p "$RUNNER_TEMP/legacy"
+          curl -fsSL https://nodejs.org/dist/v0.10.48/node-v0.10.48-linux-x64.tar.gz \
+            | tar xz -C "$RUNNER_TEMP/legacy"
+          mkdir -p "$RUNNER_TEMP/legacy/npm125"
+          curl -fsSL https://registry.npmjs.org/npm/-/npm-1.2.25.tgz \
+            | tar xz -C "$RUNNER_TEMP/legacy/npm125"
+          "$RUNNER_TEMP/legacy/node-v0.10.48-linux-x64/bin/node" -v
+
+      # This workflow is not part of the published package; the upstream
+      # .npmignore has no .github entry, so drop the directory before packing
+      # rather than editing a file that ships inside the tarball.
+      - name: Drop CI-only files from the pack tree
+        run: rm -rf .github
+
+      - name: npm pack
+        run: |
+          "$RUNNER_TEMP/legacy/node-v0.10.48-linux-x64/bin/node" \
+            "$RUNNER_TEMP/legacy/npm125/package/cli.js" pack
+          ls -l jquery-*.tgz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball
+          path: jquery-1.11.1.tgz
+          if-no-files-found: error
